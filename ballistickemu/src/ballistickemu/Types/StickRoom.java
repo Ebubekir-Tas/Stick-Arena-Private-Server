@@ -18,7 +18,6 @@
  *     the Free Software Foundation, Inc., 59 Temple Place,
  */
 package ballistickemu.Types;
-
 import java.util.Random;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -60,6 +59,7 @@ public class StickRoom {
 	private StickClient lastKickTarget;
 	Set<StickClient> kickVoters;
 	Set<String> totalJoinedClients;
+	private boolean roomMarkedForKill;
 
 	public StickRoom() {
 		this.CR = new StickClientRegistry(false);
@@ -83,6 +83,7 @@ public class StickRoom {
 		blacklist = new ArrayList<>();
 		kickVoters = new HashSet<>();
 		totalJoinedClients = new HashSet<>();
+		this.roomMarkedForKill = false;
 	}
 
 	public void BroadcastToRoom(StickPacket packet) {
@@ -91,8 +92,9 @@ public class StickRoom {
 		try {
 			for (StickClient c : this.CR.getAllClients()) {
 				try {
-					if (!c.getLobbyStatus())
+					if (!c.getLobbyStatus()) {
 						c.write(packet);
+					}
 				} catch (Exception e) {
 					ToDC.add(c);
 				}
@@ -192,16 +194,15 @@ public class StickRoom {
 
 	public void killRoom() {
 		this.CR.ClientsLock.writeLock().lock();
-		try {
-			for (StickClient SC : this.CR.getAllClients()) {
-				SC.write(StickPacketMaker.getErrorPacket("5"));
-				CR.deregisterClient(SC);
+		this.roomMarkedForKill = true;
+		for(StickClient c:this.CR.getAllClients()) {
+			if (!c.getLobbyStatus()) {
+				c.setRequiresUpdate(true);
+				c.write(StickPacketMaker.getErrorPacket("5"));
+				break;
 			}
-			Main.getLobbyServer().getRoomRegistry()
-					.deRegisterRoom(Main.getLobbyServer().getRoomRegistry().GetRoomFromName(Name));
-		} finally {
-			this.CR.ClientsLock.writeLock().unlock();
 		}
+		this.CR.ClientsLock.writeLock().unlock();
 	}
 
 	public LinkedHashMap<String, StickClient> getVIPs() {
@@ -255,19 +256,17 @@ public class StickRoom {
 				Thread.currentThread().interrupt();
 				return;
 			}
-
-			if (RoundTime > 0)
-				RoundTime = (RoundTime - 1);
-			else
-				RoundTime = 270;
-			if (RoundTime == 1) {
-				RoundTime = 300;
+			RoundTime = (RoundTime - 1);
+			if (RoundTime == -1) {
 				updateStats(getWinner());
 				awardRandomPrize();
+			} 
+			if(RoundTime <=-30) {
+				RoundTime = 300;
 			}
 		}
 
-    private Random random = new Random();
+	private Random random = new Random();
 
 	private void awardRandomPrize() {
 		for (StickClient client : CR.getAllClients()) {
@@ -398,12 +397,11 @@ public class StickRoom {
 						} else {
 							loss = 1;
 						}
-
 						int killCap = Math.min(c.getGameKills(), 40);
 						PreparedStatement ps = DatabaseTools.getDbConnection()
 								.prepareStatement("UPDATE `users` SET `kills` = `kills` + ?, `deaths` = `deaths` + ?, "
 										+ "`wins` = `wins` + ?, `losses` = `losses` + ? WHERE `UID` = ?");
-						ps.setInt(1, killCap);
+						ps.setInt(1,  killCap);
 						ps.setInt(2, c.getGameDeaths());
 						ps.setInt(3, win);
 						ps.setInt(4, loss);
@@ -434,14 +432,19 @@ public class StickRoom {
 		}
 	}
 
+	public boolean isMarkedForKill()
+	{
+		return roomMarkedForKill;
+	}
+	
 	public boolean isFull(StickClient client) {
 		int numPlayers = this.CR.getAllClients().size();
 		if (client.getPass() || getNeedsPass()) {
-			if (numPlayers >= 12) {
+			if (numPlayers > 12) {
 				return true;
 			}
 		} else {
-			if (numPlayers >= 12) {
+			if (numPlayers > 12) {
 				return true;
 			}
 		}

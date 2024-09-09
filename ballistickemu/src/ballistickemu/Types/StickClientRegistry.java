@@ -61,7 +61,7 @@ public class StickClientRegistry {
 			this.ClientsLock.writeLock().unlock();
 		}
 	}
-
+	
 	public void deregisterClient(StickClient client) {
 		if (client.getLobbyStatus() && this.isLobby) {
 			// only allow access if another thread isn't reading the resource
@@ -72,38 +72,12 @@ public class StickClientRegistry {
 				this.ClientsLock.writeLock().unlock();
 			}
 			LOGGER.info("User " + client.getName() + " being deregistered from main registry.");
-			Main.getLobbyServer().BroadcastPacket(StickPacketMaker.Disconnected(client.getUID()));
+			if(!client.isReceivingPolicy()) {
+				// do not send disconnect package after the connection for the policy file gets closed
+				Main.getLobbyServer().BroadcastPacket(StickPacketMaker.Disconnected(client.getUID()));
+			}
 		} else if (client.getRoom() != null) {
 			StickRoom room = client.getRoom();
-			if (room.getCreatorName().equals(client.getName())) {
-				if (room.usesCustomMap()) {
-					for (StickClient c : room.GetCR().Clients.values()) {
-						if (!c.getName().equals(client.getName())) {
-							c.write(StickPacketMaker.getErrorPacket("2"));
-							room.GetCR().deregisterClient(c);
-							try {
-								Thread.sleep(100); // Clients don't properly update without waiting somehow
-							} catch (InterruptedException e) {
-								LOGGER.warn("Failed to wait to kick remaining players in a custom map room.");
-							}
-						}
-					}
-				} else if (room.getNeedsPass()) {
-					for (StickClient c : room.GetCR().Clients.values()) {
-						if (!c.getPass()) {
-							c.write(StickPacketMaker.getErrorPacket("2"));
-							room.GetCR().deregisterClient(c);
-							try {
-								Thread.sleep(100); // Clients don't properly update without waiting somehow
-							} catch (InterruptedException e) {
-								LOGGER.warn("Failed to wait to kick remaining non-VIP players.");
-							}
-						}
-					}
-				}
-
-			}
-
 			// only allow access if another thread isn't reading the resource
 			room.GetCR().ClientsLock.writeLock().lock();
 			try {
@@ -113,6 +87,51 @@ public class StickClientRegistry {
 			}
 			client.setLobbyStatus(true);
 			room.BroadcastToRoom(StickPacketMaker.Disconnected(client.getUID()));
+			
+			if (room.usesCustomMap() && this.getClientfromName(room.getCreatorName())==null) {
+					this.ClientsLock.writeLock().lock();
+					// if the host of the custom map room leaves, kick all players
+					for(StickClient c:this.getAllClients()) {
+						if (!c.getLobbyStatus() && !room.getCreatorName().equals(c.getName())) {
+							// Kick them one by one to avoid lobby conflicts with multiple players leaving at the same time
+							c.setRequiresUpdate(true);
+							c.write(StickPacketMaker.getErrorPacket("2"));
+							break;
+						}
+					}
+					this.ClientsLock.writeLock().unlock();
+				} else if (room.getNeedsPass()) {
+					if(client.getName().equals(room.getCreatorName())) {
+						// if the creator of a vip room leaves, reset vips to initiate kicking all vips
+						room.getVIPs().clear();
+					}
+					if(room.getVIPs().isEmpty()) {
+					// if it has no vips or creator of vip match left kick remaining non lab pass players	
+					this.ClientsLock.writeLock().lock();
+					for(StickClient c:this.getAllClients()) {
+						if (!c.getPass() && !c.getLobbyStatus()) {
+							// Kick them one by one to avoid lobby conflicts with multiple players leaving at the same time
+							c.setRequiresUpdate(true);
+							c.write(StickPacketMaker.getErrorPacket("2"));
+							break;
+						}
+					}	
+					this.ClientsLock.writeLock().unlock();
+					}
+				} else if(room.isMarkedForKill()) {
+					// killing of room was triggered by killroom command
+					this.ClientsLock.writeLock().lock();
+					for(StickClient c:this.getAllClients()) {
+						if(!c.getLobbyStatus()) {
+							// Kick them one by one to avoid lobby conflicts with multiple players leaving at the same time
+							c.setRequiresUpdate(true);
+							c.write(StickPacketMaker.getErrorPacket("5"));
+							break;
+						}
+					}
+					this.ClientsLock.writeLock().unlock();
+				}
+			
 		}
 	}
 
